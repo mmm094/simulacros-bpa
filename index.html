@@ -336,9 +336,19 @@ $("btnAgain").onclick = ()=> buildExam("new");
 $("btnHome").onclick = renderHome;
 
 renderHome();
-const MODEL = "gemini-2.5-flash-lite";   // el que menos recursos gasta y más cupo gratuito tiene
-const BACKUP = "gemini-2.0-flash-lite";  // solo si el anterior no existe en tu cuenta
+const MODEL = "gemini-3.5-flash-lite";   // el modelo ligero que recomienda Google ahora
 let modelInUse = MODEL;
+// Busca en tu cuenta el modelo "flash-lite" más reciente y estable (Google los va retirando)
+async function findLite(key){
+  const r = await fetch(`${API}/models?pageSize=200`, {headers:{"x-goog-api-key":key}});
+  if (!r.ok) return null;
+  const d = await r.json();
+  const names = (d.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes("generateContent")).map(m=>m.name.replace("models/",""));
+  const clean = n => !/(preview|exp|image|tts|audio|live|thinking)/.test(n);
+  const sortV = a => a.sort((x,y)=>y.localeCompare(x,undefined,{numeric:true}));
+  return sortV(names.filter(n=>/flash-lite/.test(n) && clean(n)))[0]
+      || sortV(names.filter(n=>/flash/.test(n) && clean(n)))[0] || null;
+}
 function makeGrader(key){
   return async function(prompt, signal){
     const call = async (model)=>{
@@ -352,7 +362,10 @@ function makeGrader(key){
       return res;
     };
     let res = await call(modelInUse);
-    if (res.status===404 && modelInUse!==BACKUP){ modelInUse = BACKUP; res = await call(modelInUse); }
+    if (res.status===404 || res.status===400){
+      const alt = await findLite(key);
+      if (alt && alt!==modelInUse){ modelInUse = alt; setCfg({key, model:alt}); res = await call(modelInUse); }
+    }
     if (res.status===429){
       setStatus("Gemini está saturado; reintento en 20 segundos…");
       await new Promise(r=>setTimeout(r,20000));
@@ -372,10 +385,10 @@ async function loadModels(key){
   const st = $("keyStatus");
   st.textContent = "Comprobando la clave…";
   try {
-    const r = await fetch(`${API}/models/${MODEL}`, {headers:{"x-goog-api-key":key}});
-    if (r.status===404){ modelInUse = BACKUP; }
-    else if (!r.ok) throw new Error(r.status);
-    setCfg({key});
+    const r = await fetch(`${API}/models?pageSize=1`, {headers:{"x-goog-api-key":key}});
+    if (!r.ok) throw new Error(r.status);
+    modelInUse = (await findLite(key)) || MODEL;
+    setCfg({key, model:modelInUse});
     sample = makeGrader(key);
     st.textContent = `Clave correcta. Corregirá con ${modelInUse}.`;
   } catch(e){
